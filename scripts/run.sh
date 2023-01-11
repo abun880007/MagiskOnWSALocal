@@ -32,8 +32,8 @@ abort() {
     exit 1
 }
 require_su() {
-    if test "$(whoami)" != "root"; then
-        if [ -z "$SUDO" ] && [ "$($SUDO whoami)" != "root" ]; then
+    if test "$(id -u)" != "0"; then
+        if [ -z "$SUDO" ] && [ "$($SUDO id -u)" != "0" ]; then
             echo "ROOT/SUDO is required to run this script"
             abort
         fi
@@ -44,8 +44,10 @@ check_dependencies() {
     command -v whiptail >/dev/null 2>&1 || command -v dialog >/dev/null 2>&1 || NEED_INSTALL+=("whiptail")
     command -v seinfo >/dev/null 2>&1 || NEED_INSTALL+=("setools")
     command -v lzip >/dev/null 2>&1 || NEED_INSTALL+=("lzip")
-    command -v wine64 >/dev/null 2>&1 || NEED_INSTALL+=("wine")
-    command -v winetricks >/dev/null 2>&1 || NEED_INSTALL+=("winetricks")
+    if [ ! -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+        command -v wine64 >/dev/null 2>&1 || NEED_INSTALL+=("wine")
+        command -v winetricks >/dev/null 2>&1 || NEED_INSTALL+=("winetricks")
+    fi
     command -v patchelf >/dev/null 2>&1 || NEED_INSTALL+=("patchelf")
     command -v resize2fs >/dev/null 2>&1 || NEED_INSTALL+=("e2fsprogs")
     command -v pip >/dev/null 2>&1 || NEED_INSTALL+=("python3-pip")
@@ -122,10 +124,12 @@ if [ -n "${NEED_INSTALL[*]}" ]; then
 fi
 pip list --disable-pip-version-check | grep -E "^requests " >/dev/null 2>&1 || python3 -m pip install requests
 
-winetricks list-installed | grep -E "^msxml6" >/dev/null 2>&1 || {
-    cp -r ../wine/.cache/* ~/.cache
-    winetricks msxml6 || abort
-}
+if [ ! -f /proc/sys/fs/binfmt_misc/WSLInterop ] && which wine64 > /dev/null; then
+    winetricks list-installed | grep -E "^msxml6" >/dev/null 2>&1 || {
+        cp -r ../wine/.cache/* ~/.cache
+        winetricks msxml6 || abort
+    }
+fi
 WHIPTAIL=$(command -v whiptail 2>/dev/null)
 DIALOG=$(command -v dialog 2>/dev/null)
 DIALOG=${WHIPTAIL:-$DIALOG}
@@ -186,7 +190,7 @@ if (YesNoBox '([title]="Install GApps" [text]="Do you want to install GApps?")')
 else
     GAPPS_BRAND="none"
 fi
-if [ $GAPPS_BRAND = "OpenGApps" ]; then
+if [ "$GAPPS_BRAND" = "OpenGApps" ]; then
     # TODO: Keep it pico since other variants of opengapps are unable to boot successfully
     if [ "$DEBUG" = "1" ]; then
     GAPPS_VARIANT=$(

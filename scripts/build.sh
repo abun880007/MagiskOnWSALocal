@@ -28,27 +28,22 @@ if [ "$HOST_ARCH" != "x86_64" ] && [ "$HOST_ARCH" != "aarch64" ]; then
     exit 1
 fi
 cd "$(dirname "$0")" || exit 1
-trap umount_clean EXIT
 # export TMPDIR=$(dirname "$PWD")/WORK_DIR_
 if [ "$TMPDIR" ] && [ ! -d "$TMPDIR" ]; then
     mkdir -p "$TMPDIR"
 fi
 WORK_DIR=$(mktemp -d -t wsa-build-XXXXXXXXXX_) || exit 1
-DOWNLOAD_DIR=../download
-DOWNLOAD_CONF_NAME=download.list
-OUTPUT_DIR=../output
 MOUNT_DIR="$WORK_DIR"/system
 SUDO="$(which sudo 2>/dev/null)"
 if [ -z "$SUDO" ]; then
     unset SUDO
 fi
-WSA_WORK_ENV="${WORK_DIR:?}"/ENV
-if [ -f "$WSA_WORK_ENV" ]; then rm -f "${WSA_WORK_ENV:?}"; fi
-touch "$WSA_WORK_ENV"
-export WSA_WORK_ENV
+DOWNLOAD_DIR=../download
+DOWNLOAD_CONF_NAME=download.list
 umount_clean() {
+    echo "Cleanup Work Directory"
     if [ -d "$MOUNT_DIR" ]; then
-        echo "Cleanup Work Directory"
+        echo "Cleanup Mount Directory"
         if [ -d "$MOUNT_DIR/vendor" ]; then
             $SUDO umount "$MOUNT_DIR"/vendor
         fi
@@ -67,7 +62,14 @@ umount_clean() {
         rm -rf "${TMPDIR:?}"
         unset TMPDIR
     fi
+    rm -f "${DOWNLOAD_DIR:?}/$DOWNLOAD_CONF_NAME"
 }
+trap umount_clean EXIT
+OUTPUT_DIR=../output
+WSA_WORK_ENV="${WORK_DIR:?}"/ENV
+if [ -f "$WSA_WORK_ENV" ]; then rm -f "${WSA_WORK_ENV:?}"; fi
+touch "$WSA_WORK_ENV"
+export WSA_WORK_ENV
 clean_download() {
     if [ -d "$DOWNLOAD_DIR" ]; then
         echo "Cleanup Download Directory"
@@ -322,8 +324,8 @@ if [ "$DEBUG" ]; then
 fi
 
 require_su() {
-    if test "$(whoami)" != "root"; then
-        if [ -z "$SUDO" ] || [ "$($SUDO whoami)" != "root" ]; then
+    if test "$(id -u)" != "0"; then
+        if [ -z "$SUDO" ] || [ "$($SUDO id -u)" != "0" ]; then
             echo "ROOT/SUDO is required to run this script"
             abort
         fi
@@ -365,7 +367,6 @@ update_gapps_zip_name() {
 }
 update_gapps_zip_name
 if [ -z "${OFFLINE+x}" ]; then
-    trap 'rm -f -- "${DOWNLOAD_DIR:?}/${DOWNLOAD_CONF_NAME}"' EXIT
     require_su
     if [ "${DOWN_WSA}" != "no" ]; then
         echo "Generate Download Links"
@@ -445,7 +446,7 @@ if [ -f "$MAGISK_PATH" ]; then
     $SUDO patchelf --replace-needed libc.so "../linker/$HOST_ARCH/libc.so" "$WORK_DIR"/magisk/magiskpolicy || abort
     $SUDO patchelf --replace-needed libm.so "../linker/$HOST_ARCH/libm.so" "$WORK_DIR"/magisk/magiskpolicy || abort
     $SUDO patchelf --replace-needed libdl.so "../linker/$HOST_ARCH/libdl.so" "$WORK_DIR"/magisk/magiskpolicy || abort
-    chmod +x "../linker/$HOST_ARCH/linker64" || abort
+    $SUDO chmod +x "../linker/$HOST_ARCH/linker64" || abort
     $SUDO patchelf --set-interpreter "../linker/$HOST_ARCH/linker64" "$WORK_DIR"/magisk/magiskpolicy || abort
     chmod +x "$WORK_DIR"/magisk/magiskpolicy || abort
 elif [ -z "${CUSTOM_MAGISK+x}" ]; then
@@ -635,9 +636,9 @@ EOF
     echo -e "Integrate Magisk done\n"
 fi
 
-echo "Merge Language Resources"
-cp "$WORK_DIR"/wsa/"$ARCH"/resources.pri "$WORK_DIR"/wsa/pri/en-us.pri \
-&& cp "$WORK_DIR"/wsa/"$ARCH"/AppxManifest.xml "$WORK_DIR"/wsa/xml/en-us.xml && {
+cp "$WORK_DIR/wsa/$ARCH/resources.pri" "$WORK_DIR"/wsa/pri/en-us.pri \
+&& cp "$WORK_DIR/wsa/$ARCH/AppxManifest.xml" "$WORK_DIR"/wsa/xml/en-us.xml && {
+    echo "Merge Language Resources"
     tee "$WORK_DIR"/wsa/priconfig.xml <<EOF
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <resources targetOsVersion="10.0.0" majorVersion="1">
@@ -647,10 +648,16 @@ cp "$WORK_DIR"/wsa/"$ARCH"/resources.pri "$WORK_DIR"/wsa/pri/en-us.pri \
 </index>
 </resources>
 EOF
-    wine64 ../wine/"$HOST_ARCH"/makepri.exe new /pr "$WORK_DIR"/wsa/pri /in MicrosoftCorporationII.WindowsSubsystemForAndroid /cf "$WORK_DIR"/wsa/priconfig.xml /of "$WORK_DIR"/wsa/"$ARCH"/resources.pri /o
-    sed -i -zE "s/<Resources.*Resources>/<Resources>\n$(cat "$WORK_DIR"/wsa/xml/* | grep -Po '<Resource [^>]*/>' | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\$/\\$/g' | sed 's/\//\\\//g')\n<\/Resources>/g" "$WORK_DIR"/wsa/"$ARCH"/AppxManifest.xml
+    if [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+        ../wine/"$HOST_ARCH"/makepri.exe new /pr "$(wslpath -w "$WORK_DIR"/wsa/pri)" /in MicrosoftCorporationII.WindowsSubsystemForAndroid /cf "$(wslpath -w "$WORK_DIR"/wsa/priconfig.xml)" /of "$(wslpath -w "$WORK_DIR"/wsa/"$ARCH"/resources.pri)" /o
+    elif which wine64 > /dev/null; then
+        wine64 ../wine/"$HOST_ARCH"/makepri.exe new /pr "$WORK_DIR"/wsa/pri /in MicrosoftCorporationII.WindowsSubsystemForAndroid /cf "$WORK_DIR"/wsa/priconfig.xml /of "$WORK_DIR"/wsa/"$ARCH"/resources.pri /o
+    else
+        res_merge_failed=1
+    fi
+    [ -z "$res_merge_failed" ] && sed -i -zE "s/<Resources.*Resources>/<Resources>\n$(cat "$WORK_DIR"/wsa/xml/* | grep -Po '<Resource [^>]*/>' | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/\$/\\$/g' | sed 's/\//\\\//g')\n<\/Resources>/g" "$WORK_DIR"/wsa/"$ARCH"/AppxManifest.xml && \
     echo -e "Merge Language Resources done\n"
-} || echo -e "Merge Language Resources failed\n"
+} && [ -n "$res_merge_failed" ] && echo -e "Merge Language Resources failed\n" && unset res_merge_failed
 
 echo "Add extra packages"
 $SUDO cp -r ../"$ARCH"/system/* "$MOUNT_DIR" || abort
